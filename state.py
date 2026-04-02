@@ -1,6 +1,8 @@
 from ultralytics import YOLO
 import cv2
 from collections import defaultdict
+import pygame
+import time
 
 # YOLO modelini yükle
 model = YOLO("yolov8n.pt")
@@ -8,13 +10,56 @@ model = YOLO("yolov8n.pt")
 # Kamera aç
 cap = cv2.VideoCapture(0)
 
+# pygame ses sistemi başlat
+pygame.mixer.init()
+print("pygame mixer hazir")
+
 # State tutma
 zone_counts = defaultdict(int)
 last_zone = None
-last_center = None
+
+# Ses cooldown
+last_sound_time = 0
+COOLDOWN = 0.25   # daha hizli tepki
 
 # COCO class id: cell phone = 67
 PHONE_CLASS_ID = 67
+
+# Zone bazli temel sesler
+base_sound_map = {
+    "sol_ust": pygame.mixer.Sound("sounds/sol_ust.wav"),
+    "sag_ust": pygame.mixer.Sound("sounds/sag_ust.wav"),
+    "sol_alt": pygame.mixer.Sound("sounds/sol_alt.wav"),
+    "sag_alt": pygame.mixer.Sound("sounds/sag_alt.wav")
+}
+
+def play_sound(zone, count):
+    global last_sound_time
+
+    now = time.time()
+    if now - last_sound_time < COOLDOWN:
+        return
+
+    try:
+        # count bazli mantik
+        # elinde tek dosya varsa yine ayni sesi calar
+        if count == 1:
+            base_sound_map[zone].play()
+            print(f"SES 1: {zone}")
+        elif count == 2:
+            base_sound_map[zone].play()
+            print(f"SES 2: {zone}")
+        elif count == 3:
+            base_sound_map[zone].play()
+            print(f"SES 3: {zone}")
+        else:
+            base_sound_map[zone].play()
+            print(f"SES TEKRAR: {zone} ({count})")
+
+        last_sound_time = now
+
+    except Exception as e:
+        print("Ses hatasi:", e)
 
 def get_zone(cx, cy, w, h):
     mid_x = w // 2
@@ -58,7 +103,6 @@ while True:
         cls = int(box.cls[0].item())
         conf = float(box.conf[0].item())
 
-        # Sadece telefonu al
         if cls == PHONE_CLASS_ID and conf > 0.40:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
 
@@ -68,11 +112,9 @@ while True:
             current_zone = get_zone(cx, cy, w, h)
             detected_phone = True
 
-            # Kutu çiz
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
             cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
 
-            # Bilgi yaz
             cv2.putText(
                 frame,
                 f"Telefon | {current_zone} | conf:{conf:.2f}",
@@ -83,24 +125,24 @@ while True:
                 2
             )
 
-            # Aynı frame'de ilk telefon yeter
             break
 
     if detected_phone:
-        # İlk kez görüldüyse veya zone değiştiyse event üret
         if current_zone != last_zone:
             zone_counts[current_zone] += 1
+            count = zone_counts[current_zone]
 
             if last_zone is None:
-                print(f"EVENT: telefon ilk kez {current_zone} bölgesinde goruldu")
+                print(f"EVENT: telefon ilk kez {current_zone} bolgesinde goruldu")
             else:
                 print(f"EVENT: telefon {last_zone} -> {current_zone} gecti")
 
-            print(f"STATE: telefon {zone_counts[current_zone]} defa {current_zone} bölgede goruldu")
+            print(f"STATE: telefon {count} defa {current_zone} bolgede goruldu")
+
+            play_sound(current_zone, count)
 
             last_zone = current_zone
 
-        # Ekrana state yaz
         y_offset = 60
         for zone_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
             text = f"{zone_name}: {zone_counts[zone_name]}"
@@ -136,9 +178,8 @@ while True:
             2
         )
 
-    cv2.imshow("PlayX Zone + Event + State", frame)
+    cv2.imshow("PlayX Zone + Event + State + Audio", frame)
 
-    # q ile çık
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 

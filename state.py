@@ -14,8 +14,10 @@ while True:
 
     results = model(frame, conf=0.25, verbose=False)
     annotated_frame = frame.copy()
+    h, w, _ = frame.shape
 
     phone_detected_this_frame = False
+    region = "NONE"
 
     for box in results[0].boxes:
         cls_id = int(box.cls[0])
@@ -25,6 +27,20 @@ while True:
             phone_detected_this_frame = True
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+
+            cv2.circle(annotated_frame, (center_x, center_y), 5, (0, 0, 255), -1)
+
+            if center_x < w // 2 and center_y < h // 2:
+                region = "TOP_LEFT"
+            elif center_x >= w // 2 and center_y < h // 2:
+                region = "TOP_RIGHT"
+            elif center_x < w // 2 and center_y >= h // 2:
+                region = "BOTTOM_LEFT"
+            else:
+                region = "BOTTOM_RIGHT"
 
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
@@ -69,6 +85,16 @@ while True:
         cv2.FONT_HERSHEY_SIMPLEX,
         0.8,
         (255, 0, 0),
+        2
+    )
+
+    cv2.putText(
+        annotated_frame,
+        f"REGION: {region}",
+        (20, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 0),
         2
     )
 

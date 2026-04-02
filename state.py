@@ -1,146 +1,144 @@
 from ultralytics import YOLO
 import cv2
+from collections import defaultdict
 
+# YOLO modelini yükle
 model = YOLO("yolov8n.pt")
+
+# Kamera aç
 cap = cv2.VideoCapture(0)
 
-prev_state = "no_phone"
-prev_region = "NONE"
-phone_frames = 0
-last_event_text = ""
+# State tutma
+zone_counts = defaultdict(int)
+last_zone = None
+last_center = None
+
+# COCO class id: cell phone = 67
+PHONE_CLASS_ID = 67
+
+def get_zone(cx, cy, w, h):
+    mid_x = w // 2
+    mid_y = h // 2
+
+    if cx < mid_x and cy < mid_y:
+        return "sol_ust"
+    elif cx >= mid_x and cy < mid_y:
+        return "sag_ust"
+    elif cx < mid_x and cy >= mid_y:
+        return "sol_alt"
+    else:
+        return "sag_alt"
 
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("Kamera okunamadi.")
         break
 
-    results = model(frame, conf=0.25, verbose=False)
-    annotated_frame = frame.copy()
     h, w, _ = frame.shape
+    mid_x = w // 2
+    mid_y = h // 2
 
-    phone_detected_this_frame = False
-    region = "NONE"
-    event_text = ""
+    # Zone çizgileri
+    cv2.line(frame, (mid_x, 0), (mid_x, h), (0, 255, 0), 2)
+    cv2.line(frame, (0, mid_y), (w, mid_y), (0, 255, 0), 2)
 
-    cv2.line(annotated_frame, (w // 2, 0), (w // 2, h), (255, 255, 255), 2)
-    cv2.line(annotated_frame, (0, h // 2), (w, h // 2), (255, 255, 255), 2)
+    # Zone isimleri
+    cv2.putText(frame, "SOL UST", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(frame, "SAG UST", (mid_x + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(frame, "SOL ALT", (20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(frame, "SAG ALT", (mid_x + 20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    results = model(frame)
+
+    detected_phone = False
+    current_zone = None
 
     for box in results[0].boxes:
-        cls_id = int(box.cls[0])
-        class_name = model.names[cls_id]
+        cls = int(box.cls[0].item())
+        conf = float(box.conf[0].item())
 
-        if class_name == "cell phone":
-            phone_detected_this_frame = True
-
+        # Sadece telefonu al
+        if cls == PHONE_CLASS_ID and conf > 0.40:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
 
-            cv2.circle(annotated_frame, (center_x, center_y), 5, (0, 0, 255), -1)
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
 
-            if center_x < w // 2 and center_y < h // 2:
-                region = "TOP_LEFT"
-            elif center_x >= w // 2 and center_y < h // 2:
-                region = "TOP_RIGHT"
-            elif center_x < w // 2 and center_y >= h // 2:
-                region = "BOTTOM_LEFT"
-            else:
-                region = "BOTTOM_RIGHT"
+            current_zone = get_zone(cx, cy, w, h)
+            detected_phone = True
 
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Kutu çiz
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+
+            # Bilgi yaz
             cv2.putText(
-                annotated_frame,
-                "cell phone",
-                (x1, y1 - 10),
+                frame,
+                f"Telefon | {current_zone} | conf:{conf:.2f}",
+                (x1, max(y1 - 10, 20)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
+                0.6,
+                (0, 255, 255),
                 2
             )
 
-    if phone_detected_this_frame:
-        phone_frames += 1
+            # Aynı frame'de ilk telefon yeter
+            break
+
+    if detected_phone:
+        # İlk kez görüldüyse veya zone değiştiyse event üret
+        if current_zone != last_zone:
+            zone_counts[current_zone] += 1
+
+            if last_zone is None:
+                print(f"EVENT: telefon ilk kez {current_zone} bölgesinde goruldu")
+            else:
+                print(f"EVENT: telefon {last_zone} -> {current_zone} gecti")
+
+            print(f"STATE: telefon {zone_counts[current_zone]} defa {current_zone} bölgede goruldu")
+
+            last_zone = current_zone
+
+        # Ekrana state yaz
+        y_offset = 60
+        for zone_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
+            text = f"{zone_name}: {zone_counts[zone_name]}"
+            cv2.putText(
+                frame,
+                text,
+                (20, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 0),
+                2
+            )
+            y_offset += 30
+
+        cv2.putText(
+            frame,
+            f"Anlik Zone: {last_zone}",
+            (20, h - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+
     else:
-        phone_frames = 0
-        region = "NONE"
+        cv2.putText(
+            frame,
+            "Telefon tespit edilmedi",
+            (20, h - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2
+        )
 
-    if phone_frames > 5:
-        state = "phone_detected"
-    else:
-        state = "no_phone"
+    cv2.imshow("PlayX Zone + Event + State", frame)
 
-    if state != prev_state:
-        print("STATE CHANGED:", prev_state, "→", state)
-
-    if region != prev_region and region != "NONE" and prev_region != "NONE":
-        print("REGION CHANGED:", prev_region, "->", region)
-
-        if prev_region == "TOP_RIGHT" and region == "TOP_LEFT":
-            event_text = "telefon sag ustten sol uste gecti"
-        elif prev_region == "TOP_LEFT" and region == "TOP_RIGHT":
-            event_text = "telefon sol ustten sag uste gecti"
-        elif prev_region == "BOTTOM_RIGHT" and region == "BOTTOM_LEFT":
-            event_text = "telefon sag alttan sol alta gecti"
-        elif prev_region == "BOTTOM_LEFT" and region == "BOTTOM_RIGHT":
-            event_text = "telefon sol alttan sag alta gecti"
-        elif prev_region == "TOP_LEFT" and region == "BOTTOM_LEFT":
-            event_text = "telefon sol ustten sol alta gecti"
-        elif prev_region == "BOTTOM_LEFT" and region == "TOP_LEFT":
-            event_text = "telefon sol alttan sol uste gecti"
-        elif prev_region == "TOP_RIGHT" and region == "BOTTOM_RIGHT":
-            event_text = "telefon sag ustten sag alta gecti"
-        elif prev_region == "BOTTOM_RIGHT" and region == "TOP_RIGHT":
-            event_text = "telefon sag alttan sag uste gecti"
-        elif prev_region == "TOP_LEFT" and region == "BOTTOM_RIGHT":
-            event_text = "telefon sol ustten sag alta capraz gecti"
-        elif prev_region == "BOTTOM_RIGHT" and region == "TOP_LEFT":
-            event_text = "telefon sag alttan sol uste capraz gecti"
-        elif prev_region == "TOP_RIGHT" and region == "BOTTOM_LEFT":
-            event_text = "telefon sag ustten sol alta capraz gecti"
-        elif prev_region == "BOTTOM_LEFT" and region == "TOP_RIGHT":
-            event_text = "telefon sol alttan sag uste capraz gecti"
-
-        if event_text != "":
-            print("EVENT:", event_text)
-            last_event_text = event_text
-
-    prev_state = state
-
-    if region != "NONE":
-        prev_region = region
-
-    cv2.putText(
-        annotated_frame,
-        f"STATE: {state}",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 0, 255),
-        2
-    )
-
-    cv2.putText(
-        annotated_frame,
-        f"REGION: {region}",
-        (20, 80),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (255, 255, 0),
-        2
-    )
-
-    cv2.putText(
-        annotated_frame,
-        f"EVENT: {last_event_text}",
-        (20, 120),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 255),
-        2
-    )
-
-    cv2.imshow("YOLO", annotated_frame)
-
+    # q ile çık
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 

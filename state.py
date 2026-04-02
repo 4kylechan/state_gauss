@@ -4,6 +4,9 @@ import cv2
 model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
 
+prev_state = "no_phone"
+phone_frames = 0
+
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -12,15 +15,14 @@ while True:
     results = model(frame, conf=0.25, verbose=False)
     annotated_frame = frame.copy()
 
-    # her frame başında state reset eder babuş
-    state = "no_phone"
+    phone_detected_this_frame = False
 
     for box in results[0].boxes:
         cls_id = int(box.cls[0])
         class_name = model.names[cls_id]
 
         if class_name == "cell phone":
-            state = "phone_detected"
+            phone_detected_this_frame = True
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
 
@@ -35,7 +37,21 @@ while True:
                 2
             )
 
-    # for dışında yazılır asuman 
+    if phone_detected_this_frame:
+        phone_frames += 1
+    else:
+        phone_frames = 0
+
+    if phone_frames > 5:
+        state = "phone_detected"
+    else:
+        state = "no_phone"
+
+    if state != prev_state:
+        print("STATE CHANGED:", prev_state, "→", state)
+
+    prev_state = state
+
     cv2.putText(
         annotated_frame,
         f"STATE: {state}",
@@ -43,6 +59,16 @@ while True:
         cv2.FONT_HERSHEY_SIMPLEX,
         1,
         (0, 0, 255),
+        2
+    )
+
+    cv2.putText(
+        annotated_frame,
+        f"PHONE FRAMES: {phone_frames}",
+        (20, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 0, 0),
         2
     )
 

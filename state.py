@@ -3,6 +3,7 @@ import cv2
 from collections import defaultdict
 import pygame
 import time
+import threading
 
 # YOLO modelini yükle
 model = YOLO("yolov8n.pt")
@@ -11,7 +12,8 @@ model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
 
 # pygame ses sistemi başlat
-pygame.mixer.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+pygame.mixer.set_num_channels(8)
 print("pygame mixer hazir")
 
 # State tutma
@@ -20,12 +22,12 @@ last_zone = None
 
 # Ses cooldown
 last_sound_time = 0
-COOLDOWN = 0.25   # daha hizli tepki
+COOLDOWN = 0.5   # biraz daha uzun, daha stabil
 
 # COCO class id: cell phone = 67
 PHONE_CLASS_ID = 67
 
-# Zone bazli temel sesler
+# Zone bazli temel sesler (önceden yükleniyor)
 base_sound_map = {
     "sol_ust": pygame.mixer.Sound("sounds/sol_ust.wav"),
     "sag_ust": pygame.mixer.Sound("sounds/sag_ust.wav"),
@@ -35,31 +37,23 @@ base_sound_map = {
 
 def play_sound(zone, count):
     global last_sound_time
-
     now = time.time()
     if now - last_sound_time < COOLDOWN:
         return
 
-    try:
-        # count bazli mantik
-        # elinde tek dosya varsa yine ayni sesi calar
-        if count == 1:
-            base_sound_map[zone].play()
-            print(f"SES 1: {zone}")
-        elif count == 2:
-            base_sound_map[zone].play()
-            print(f"SES 2: {zone}")
-        elif count == 3:
-            base_sound_map[zone].play()
-            print(f"SES 3: {zone}")
-        else:
-            base_sound_map[zone].play()
-            print(f"SES TEKRAR: {zone} ({count})")
+    def _play():
+        try:
+            channel = pygame.mixer.find_channel(True)
+            if channel:
+                channel.play(base_sound_map[zone])
+                print(f"SES: {zone} ({count})")
+            else:
+                print("Uyarı: boş ses kanalı bulunamadı")
+        except Exception as e:
+            print("Ses hatasi:", e)
 
-        last_sound_time = now
-
-    except Exception as e:
-        print("Ses hatasi:", e)
+    threading.Thread(target=_play, daemon=True).start()
+    last_sound_time = now
 
 def get_zone(cx, cy, w, h):
     mid_x = w // 2
@@ -73,6 +67,8 @@ def get_zone(cx, cy, w, h):
         return "sol_alt"
     else:
         return "sag_alt"
+
+frame_count = 0
 
 while True:
     ret, frame = cap.read()
@@ -94,38 +90,41 @@ while True:
     cv2.putText(frame, "SOL ALT", (20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(frame, "SAG ALT", (mid_x + 20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-    results = model(frame)
+    # YOLO inference'i her 2 karede bir çalıştır
+    if frame_count % 2 == 0:
+        results = model(frame)
+    frame_count += 1
 
     detected_phone = False
     current_zone = None
+    event_text = None
 
-    for box in results[0].boxes:
-        cls = int(box.cls[0].item())
-        conf = float(box.conf[0].item())
+    if frame_count % 2 == 0:
+        for box in results[0].boxes:
+            cls = int(box.cls[0].item())
+            conf = float(box.conf[0].item())
 
-        if cls == PHONE_CLASS_ID and conf > 0.40:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            if cls == PHONE_CLASS_ID and conf > 0.40:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
 
-            cx = (x1 + x2) // 2
-            cy = (y1 + y2) // 2
+                current_zone = get_zone(cx, cy, w, h)
+                detected_phone = True
 
-            current_zone = get_zone(cx, cy, w, h)
-            detected_phone = True
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
-
-            cv2.putText(
-                frame,
-                f"Telefon | {current_zone} | conf:{conf:.2f}",
-                (x1, max(y1 - 10, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 255),
-                2
-            )
-
-            break
+                cv2.putText(
+                    frame,
+                    f"Telefon | {current_zone} | conf:{conf:.2f}",
+                    (x1, max(y1 - 10, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2
+                )
+                break
 
     if detected_phone:
         if current_zone != last_zone:
@@ -133,15 +132,29 @@ while True:
             count = zone_counts[current_zone]
 
             if last_zone is None:
-                print(f"EVENT: telefon ilk kez {current_zone} bolgesinde goruldu")
+                event_text = f"Telefon ilk kez {current_zone.upper()} bolgesinde goruldu"
+                print(f"EVENT: {event_text}")
             else:
-                print(f"EVENT: telefon {last_zone} -> {current_zone} gecti")
+                event_text = f"Telefon {last_zone.upper()} -> {current_zone.upper()} bolgesine gecti"
+                print(f"EVENT: {event_text}")
 
             print(f"STATE: telefon {count} defa {current_zone} bolgede goruldu")
 
             play_sound(current_zone, count)
-
             last_zone = current_zone
+
+        # ORTADA yorum metni göster (sadece geçiş olduğunda)
+        if event_text:
+            cv2.putText(
+                frame,
+                event_text,
+                (w // 2 - 250, h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
 
         y_offset = 60
         for zone_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:

@@ -22,12 +22,12 @@ last_zone = None
 
 # Ses cooldown
 last_sound_time = 0
-COOLDOWN = 0.5   # biraz daha uzun, daha stabil
+COOLDOWN = 0.5
 
 # COCO class id: cell phone = 67
 PHONE_CLASS_ID = 67
 
-# Zone bazli temel sesler (önceden yükleniyor)
+# Zone bazli temel sesler
 base_sound_map = {
     "sol_ust": pygame.mixer.Sound("sounds/sol_ust.wav"),
     "sag_ust": pygame.mixer.Sound("sounds/sag_ust.wav"),
@@ -58,7 +58,6 @@ def play_sound(zone, count):
 def get_zone(cx, cy, w, h):
     mid_x = w // 2
     mid_y = h // 2
-
     if cx < mid_x and cy < mid_y:
         return "sol_ust"
     elif cx >= mid_x and cy < mid_y:
@@ -69,6 +68,7 @@ def get_zone(cx, cy, w, h):
         return "sag_alt"
 
 frame_count = 0
+event_text = ""   # yorum metni global olarak tutulacak
 
 while True:
     ret, frame = cap.read()
@@ -97,33 +97,28 @@ while True:
 
     detected_phone = False
     current_zone = None
-    event_text = None
 
     if frame_count % 2 == 0:
         for box in results[0].boxes:
             cls = int(box.cls[0].item())
             conf = float(box.conf[0].item())
-
             if cls == PHONE_CLASS_ID and conf > 0.40:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
-
                 current_zone = get_zone(cx, cy, w, h)
                 detected_phone = True
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
                 cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
 
-                cv2.putText(
-                    frame,
-                    f"Telefon | {current_zone} | conf:{conf:.2f}",
-                    (x1, max(y1 - 10, 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2
-                )
+                cv2.putText(frame,
+                            f"Telefon | {current_zone} | conf:{conf:.2f}",
+                            (x1, max(y1 - 10, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (0, 255, 255),
+                            2)
                 break
 
     if detected_phone:
@@ -139,57 +134,32 @@ while True:
                 print(f"EVENT: {event_text}")
 
             print(f"STATE: telefon {count} defa {current_zone} bolgede goruldu")
-
             play_sound(current_zone, count)
             last_zone = current_zone
-
-        # ORTADA yorum metni göster (sadece geçiş olduğunda)
-        if event_text:
-            cv2.putText(
-                frame,
-                event_text,
-                (w // 2 - 250, h // 2),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.9,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA
-            )
 
         y_offset = 60
         for zone_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
             text = f"{zone_name}: {zone_counts[zone_name]}"
-            cv2.putText(
-                frame,
-                text,
-                (20, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 0),
-                2
-            )
+            cv2.putText(frame, text, (20, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
             y_offset += 30
 
-        cv2.putText(
-            frame,
-            f"Anlik Zone: {last_zone}",
-            (20, h - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2
-        )
+        cv2.putText(frame, f"Anlik Zone: {last_zone}",
+                    (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
     else:
-        cv2.putText(
-            frame,
-            "Telefon tespit edilmedi",
-            (20, h - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
-            2
-        )
+        cv2.putText(frame, "Telefon tespit edilmedi",
+                    (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+    # --- ORTADA yorum metni HER ZAMAN çiz ---
+    if event_text:
+        cv2.putText(frame, event_text,
+                    (w // 2 - 250, h // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 0, 0),   # siyah renk
+                    2,
+                    cv2.LINE_AA)
 
     cv2.imshow("PlayX Zone + Event + State + Audio", frame)
 

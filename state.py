@@ -7,6 +7,7 @@ cap = cv2.VideoCapture(0)
 prev_state = "no_phone"
 prev_region = "NONE"
 phone_frames = 0
+last_event_text = ""
 
 while True:
     ret, frame = cap.read()
@@ -19,7 +20,6 @@ while True:
 
     phone_detected_this_frame = False
     region = "NONE"
-    event_code = "none"
     event_text = ""
 
     cv2.line(annotated_frame, (w // 2, 0), (w // 2, h), (255, 255, 255), 2)
@@ -33,7 +33,6 @@ while True:
             phone_detected_this_frame = True
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
 
@@ -74,6 +73,8 @@ while True:
         print("STATE CHANGED:", prev_state, "→", state)
 
     if region != prev_region and region != "NONE" and prev_region != "NONE":
+        print("REGION CHANGED:", prev_region, "->", region)
+
         if prev_region == "TOP_RIGHT" and region == "TOP_LEFT":
             event_text = "telefon sag ustten sol uste gecti"
         elif prev_region == "TOP_LEFT" and region == "TOP_RIGHT":
@@ -82,21 +83,61 @@ while True:
             event_text = "telefon sag alttan sol alta gecti"
         elif prev_region == "BOTTOM_LEFT" and region == "BOTTOM_RIGHT":
             event_text = "telefon sol alttan sag alta gecti"
+        elif prev_region == "TOP_LEFT" and region == "BOTTOM_LEFT":
+            event_text = "telefon sol ustten sol alta gecti"
+        elif prev_region == "BOTTOM_LEFT" and region == "TOP_LEFT":
+            event_text = "telefon sol alttan sol uste gecti"
+        elif prev_region == "TOP_RIGHT" and region == "BOTTOM_RIGHT":
+            event_text = "telefon sag ustten sag alta gecti"
+        elif prev_region == "BOTTOM_RIGHT" and region == "TOP_RIGHT":
+            event_text = "telefon sag alttan sag uste gecti"
+        elif prev_region == "TOP_LEFT" and region == "BOTTOM_RIGHT":
+            event_text = "telefon sol ustten sag alta capraz gecti"
+        elif prev_region == "BOTTOM_RIGHT" and region == "TOP_LEFT":
+            event_text = "telefon sag alttan sol uste capraz gecti"
+        elif prev_region == "TOP_RIGHT" and region == "BOTTOM_LEFT":
+            event_text = "telefon sag ustten sol alta capraz gecti"
+        elif prev_region == "BOTTOM_LEFT" and region == "TOP_RIGHT":
+            event_text = "telefon sol alttan sag uste capraz gecti"
 
         if event_text != "":
             print("EVENT:", event_text)
+            last_event_text = event_text
 
     prev_state = state
-    prev_region = region
 
-    cv2.putText(annotated_frame, f"STATE: {state}", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    if region != "NONE":
+        prev_region = region
 
-    cv2.putText(annotated_frame, f"REGION: {region}", (20, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(
+        annotated_frame,
+        f"STATE: {state}",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (0, 0, 255),
+        2
+    )
 
-    cv2.putText(annotated_frame, f"EVENT: {event_text}", (20, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(
+        annotated_frame,
+        f"REGION: {region}",
+        (20, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 0),
+        2
+    )
+
+    cv2.putText(
+        annotated_frame,
+        f"EVENT: {last_event_text}",
+        (20, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 255),
+        2
+    )
 
     cv2.imshow("YOLO", annotated_frame)
 

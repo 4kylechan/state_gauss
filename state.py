@@ -1,154 +1,171 @@
 from ultralytics import YOLO
 import cv2
-from collections import defaultdict, deque
 import pygame
 import time
 import threading
 from datetime import datetime
 
-# --- SAHNEYİ HAZIRLAYALIM ---
-model = YOLO("yolov8n.pt") # Bizim keskin gözlü elemanı çağıralım
-cap = cv2.VideoCapture(0)  # Kamerayı dürtelim
+# --- MODEL VE KAMERA AYARLARI ---
+model = YOLO("yolov8n.pt")
+cap = cv2.VideoCapture(0)
 
-# Ses sistemi (Dj Pygame iş başında)
+# Ses Sistemi Başlatma
 pygame.mixer.init()
 pygame.mixer.set_num_channels(8)
 
-# Hafıza Defterimiz
-zone_counts = defaultdict(int)    # Hangi bölge kaç gol yedi?
-zone_start_times = {}             # Telefon bölgeye ne zaman "merhaba" dedi?
-event_logs = deque(maxlen=8)      # Olayların dedikodu listesi (Son 8 kayıt)
+# --- DEĞİŞKENLER (EN AÇIK HALİYLE) ---
+sol_ust_sayac = 0
+sag_ust_sayac = 0
+sol_alt_sayac = 0
+sag_alt_sayac = 0
 
-# Takip Elemanları
-last_zone = None                  # Az önce neredeydi bu?
-last_incremented_zone = None      # "Zaten saydım abi" kontrolü
-PHONE_CLASS_ID = 67               # Telefonun gizli kimlik numarası
-REQUIRED_TIME = 3.0               # Sabır testi: 3 saniye durması lazım
+# Olay Geçmişi Listesi (Yeni olayları buraya tek tek ekleyeceğiz)
+gecmis_listesi = [] 
 
-# Ses Arşivi
-base_sound_map = {
+# Zamanlama ve Takip Değişkenleri
+su_anki_bolge = None
+onceki_bolge = None
+artirim_yapildi_mi = False
+bolgeye_giris_zamani = 0
+bekleme_suresi = 3.0 # 3 saniye kuralı
+
+# Ses Dosyaları Haritası
+sesler = {
     "sol_ust": "sounds/sol_ust.wav",
     "sag_ust": "sounds/sag_ust.wav",
     "sol_alt": "sounds/sol_alt.wav",
     "sag_alt": "sounds/sag_alt.wav"
 }
 
-# --- YARDIMCI ARKADAŞLAR ---
-
-def play_sound(zone):
-    """Bölgeye özel şarkımızı çalalım."""
+# --- SES ÇALMA FONKSİYONU ---
+def ses_cal(bolge_adi):
     try:
-        sound = pygame.mixer.Sound(base_sound_map[zone])
-        sound.play()
+        dosya_yolu = sesler[bolge_adi]
+        ses_objesi = pygame.mixer.Sound(dosya_yolu)
+        ses_objesi.play()
     except:
-        pass # Ses çıkmazsa can sağlığı...
+        print("Ses dosyasi bulunamadi!")
 
-def get_zone(cx, cy, w, h):
-    """Telefon ekranın hangi mahallesinde? Onu bulur."""
-    mid_x, mid_y = w // 2, h // 2
-    if cy < mid_y:
-        return "sol_ust" if cx < mid_x else "sag_ust"
-    else:
-        return "sol_alt" if cx < mid_x else "sag_alt"
-
-# --- ASIL EĞLENCE BURADA BAŞLIYOR (ANA DÖNGÜ) ---
-
-frame_count = 0
-results = None
+# --- ANA DÖNGÜ ---
+kare_sayaci = 0
 
 while True:
     ret, frame = cap.read()
-    if not ret: break # Kamera küstüyse çıkalım
+    if ret == False:
+        break
 
-    h, w, _ = frame.shape
-    mid_x, mid_y = w // 2, h // 2
+    yukseklik, genislik, _ = frame.shape
+    orta_x = genislik // 2
+    orta_y = yukseklik // 2
 
-    # Ekrana bölge sınırlarını çizelim (Sınır namustur!)
-    cv2.line(frame, (mid_x, 0), (mid_x, h), (0, 255, 0), 2)
-    cv2.line(frame, (0, mid_y), (w, mid_y), (0, 255, 0), 2)
+    # --- ŞEFFAF BEYAZ PANEL YAPIMI (ADIM ADIM) ---
+    kopyalanan_kare = frame.copy()
+    # Sağ tarafa beyaz bir kutu çiziyoruz
+    cv2.rectangle(kopyalanan_kare, (genislik - 260, 0), (genislik, 300), (255, 255, 255), -1)
+    # Bu kutuyu ana görüntüyle %50 oranında karıştırıyoruz (Şeffaflık)
+    frame = cv2.addWeighted(kopyalanan_kare, 0.5, frame, 0.5, 0)
 
-    # Mahalleye isim verelim
-    cv2.putText(frame, "SOL UST", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(frame, "SAG UST", (mid_x + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    # --- EKRAN ÇİZGİLERİ ---
+    cv2.line(frame, (orta_x, 0), (orta_x, yukseklik), (0, 255, 0), 2)
+    cv2.line(frame, (0, orta_y), (genislik, orta_y), (0, 255, 0), 2)
 
-    # YOLO'ya "Bir baksana ne var orada?" diyelim (Her 2 karede bir yorulmasın diye)
-    if frame_count % 2 == 0:
-        results = model.predict(frame, conf=0.40, classes=[PHONE_CLASS_ID], verbose=False)
-    frame_count += 1
+    # --- YOLO TESPİT ---
+    if kare_sayaci % 2 == 0:
+        sonuclar = model.predict(frame, conf=0.40, classes=[67], verbose=False)
+    kare_sayaci = kare_sayaci + 1
 
-    detected_phone = False
-    current_zone = None
+    telefon_bulundu_mu = False
+    su_anki_bolge = None
 
-    # Eğer eleman bir telefon gördüyse...
-    if results and len(results[0].boxes) > 0:
-        box = results[0].boxes[0]
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    # Eğer bir şey bulunduysa
+    if sonuclar and len(sonuclar[0].boxes) > 0:
+        kutu = sonuclar[0].boxes[0]
+        koordinat = kutu.xyxy[0]
+        x1 = int(koordinat[0])
+        y1 = int(koordinat[1])
+        x2 = int(koordinat[2])
+        y2 = int(koordinat[3])
         
-        current_zone = get_zone(cx, cy, w, h)
-        detected_phone = True
+        merkez_x = (x1 + x2) // 2
+        merkez_y = (y1 + y2) // 2
+        telefon_bulundu_mu = True
 
-        # Telefonun etrafına sarı bir kutu konduralım
+        # Bölgeyi belirleyelim (Uzun yoldan)
+        if merkez_x < orta_x and merkez_y < orta_y:
+            su_anki_bolge = "sol_ust"
+        elif merkez_x >= orta_x and merkez_y < orta_y:
+            su_anki_bolge = "sag_ust"
+        elif merkez_x < orta_x and merkez_y >= orta_y:
+            su_anki_bolge = "sol_alt"
+        else:
+            su_anki_bolge = "sag_alt"
+
+        # Kutuyu çiz
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
-        # --- 3 SANİYE SABIR TESTİ MANTIĞI ---
-        if current_zone != last_zone:
-            # Yeni bölgeye girdi! Kronometreyi başlat.
-            zone_start_times[current_zone] = time.time()
-            last_zone = current_zone
-            last_incremented_zone = None # Yeni yer, yeni şans
+        # --- 3 SANİYE MANTIĞI ---
+        if su_anki_bolge != onceki_bolge:
+            # Yeni bir yere geçti, kronometreyi sıfırla
+            bolgeye_giris_zamani = time.time()
+            onceki_bolge = su_anki_bolge
+            artirim_yapildi_mi = False
         else:
-            # Hala aynı yerde mi? Ne kadar süredir bekliyor?
-            gecen = time.time() - zone_start_times.get(current_zone, time.time())
+            # Aynı yerdeyse geçen süreyi hesapla
+            gecen_zaman = time.time() - bolgeye_giris_zamani
             
-            if gecen >= REQUIRED_TIME:
-                if last_incremented_zone != current_zone:
-                    # Tamamdır, 3 saniye doldu! Sayacı artır.
-                    zone_counts[current_zone] += 1
+            if gecen_zaman >= bekleme_suresi:
+                if artirim_yapildi_mi == False:
+                    # Sayacı artır (Hangi bölgeyse ona ekle)
+                    if su_anki_bolge == "sol_ust": sol_ust_sayac += 1
+                    if su_anki_bolge == "sag_ust": sag_ust_sayac += 1
+                    if su_anki_bolge == "sol_alt": sol_alt_sayac += 1
+                    if su_anki_bolge == "sag_alt": sag_alt_sayac += 1
                     
-                    # Dedikodu listesine (log) ekle
-                    an = datetime.now().strftime("%H:%M:%S")
-                    event_logs.appendleft(f"[{an}] {current_zone.upper()} Tiklandi!")
+                    # Log listesine ekle (Yeni geleni en başa eklemek için insert kullanıyoruz)
+                    zaman_damgasi = datetime.now().strftime("%H:%M:%S")
+                    yeni_olay = "[" + zaman_damgasi + "] " + su_anki_bolge.upper() + " +1"
+                    gecmis_listesi.insert(0, yeni_olay)
                     
-                    # Şenlik başlasın, müziği ver!
-                    threading.Thread(target=play_sound, args=(current_zone,), daemon=True).start()
-                    last_incremented_zone = current_zone
+                    # Listeyi 8 tane ile sınırla (Fazlasını sil)
+                    if len(gecmis_listesi) > 8:
+                        gecmis_listesi.pop() # En sondakini çıkar
+                    
+                    # Sesi çal
+                    threading.Thread(target=ses_cal, args=(su_anki_bolge,), daemon=True).start()
+                    artirim_yapildi_mi = True
             else:
-                # Daha dolmadı, ekranda geri sayım yapalım (Heyecan olsun)
-                kalan = REQUIRED_TIME - gecen
-                cv2.putText(frame, f"Sabret: {kalan:.1f}s", (x1, y2 + 25), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # Geri sayımı göster
+                kalan = bekleme_suresi - gecen_zaman
+                cv2.putText(frame, "Bekle: " + str(round(kalan, 1)), (x1, y2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
     else:
-        # Telefon kaybolursa her şeyi sıfırla, sil baştan
-        last_zone = None
-        last_incremented_zone = None
+        # Telefon yoksa her şeyi sıfırla
+        onceki_bolge = None
+        artirim_yapildi_mi = False
 
-    # --- TABLO VE LOG PANELİ (GÖRSEL ŞOV) ---
+    # --- EKRAN YAZILARI (SOL TARAF) ---
+    cv2.putText(frame, "sol_ust: " + str(sol_ust_sayac), (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(frame, "sag_ust: " + str(sag_ust_sayac), (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(frame, "sol_alt: " + str(sol_alt_sayac), (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(frame, "sag_alt: " + str(sag_alt_sayac), (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
-    # Sol tarafa skor tablosu
-    y_skor = 60
-    for bolge in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
-        renk = (0, 255, 255) if bolge == current_zone else (255, 255, 0)
-        cv2.putText(frame, f"{bolge}: {zone_counts[bolge]}", (20, y_skor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, renk, 2)
-        y_skor += 30
-
-    # Sağ tarafa şeffaf "Neler Oldu?" paneli
-    cv2.rectangle(frame, (w - 260, 0), (w, 280), (0, 0, 0), -1) # Arka plan
-    cv2.putText(frame, " OLAYLAR", (w - 250, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    # --- GEÇMİŞ PANELİ (SAĞ TARAF - SİYAH METİN) ---
+    cv2.putText(frame, "SON OLAYLAR", (genislik - 250, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
     
-    y_log = 65
-    for log in event_logs:
-        cv2.putText(frame, log, (w - 250, y_log), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        y_log += 25
+    y_yeri = 65
+    for olay in gecmis_listesi:
+        cv2.putText(frame, olay, (genislik - 250, y_yeri), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        y_yeri = y_yeri + 25
 
-    # Alt kısma ufak bir durum notu
-    if not detected_phone:
-        cv2.putText(frame, "Telefon aranıyor...", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+    # --- ALT DURUM MESAJI (TÜRKÇE KARAKTER HATASIZ) ---
+    if telefon_bulundu_mu == False:
+        cv2.putText(frame, "TELEFON BULUNAMADI", (20, yukseklik - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
     else:
-        cv2.putText(frame, "Buldum!", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, "TELEFON DURUMU: TAMAM", (20, yukseklik - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    cv2.imshow("Telefon Takip Sistemi v2.0", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"): break # 'q'ya basarsan dükkanı kapatırız
+    cv2.imshow("Telefon Takip Paneli", frame)
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
 
 cap.release()
 cv2.destroyAllWindows()

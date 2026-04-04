@@ -5,163 +5,123 @@ import pygame
 import time
 import threading
 
-# YOLO modelini yükle
+# 1. Hazırlık ve Ayarlar
 model = YOLO("yolov8n.pt")
-
-# Kamera aç
 cap = cv2.VideoCapture(0)
 
-# pygame ses sistemi başlat
-pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+pygame.mixer.init()
 pygame.mixer.set_num_channels(8)
-print("pygame mixer hazir")
 
-# State tutma
 zone_counts = defaultdict(int)
 last_zone = None
-
-# Ses cooldown
 last_sound_time = 0
 COOLDOWN = 0.5
-
-# COCO class id: cell phone = 67
 PHONE_CLASS_ID = 67
 
-# Zone bazli temel sesler
+# Ses dosyalarını bir kez yükleyelim (Sürekli diskten okumaması için)
 base_sound_map = {
-    "sol_ust": pygame.mixer.Sound("sounds/sol_ust.wav"),
-    "sag_ust": pygame.mixer.Sound("sounds/sag_ust.wav"),
-    "sol_alt": pygame.mixer.Sound("sounds/sol_alt.wav"),
-    "sag_alt": pygame.mixer.Sound("sounds/sag_alt.wav")
+    "sol_ust": "sounds/sol_ust.wav",
+    "sag_ust": "sounds/sag_ust.wav",
+    "sol_alt": "sounds/sol_alt.wav",
+    "sag_alt": "sounds/sag_alt.wav"
 }
 
-def play_sound(zone, count):
+def play_sound(zone):
     global last_sound_time
     now = time.time()
     if now - last_sound_time < COOLDOWN:
         return
-
-    def _play():
-        try:
-            channel = pygame.mixer.find_channel(True)
-            if channel:
-                channel.play(base_sound_map[zone])
-                print(f"SES: {zone} ({count})")
-            else:
-                print("Uyarı: boş ses kanalı bulunamadı")
-        except Exception as e:
-            print("Ses hatasi:", e)
-
-    threading.Thread(target=_play, daemon=True).start()
+    try:
+        sound = pygame.mixer.Sound(base_sound_map[zone])
+        sound.play()
+    except Exception as e:
+        print(f"Ses çalma hatası: {e}")
     last_sound_time = now
 
 def get_zone(cx, cy, w, h):
-    mid_x = w // 2
-    mid_y = h // 2
-    if cx < mid_x and cy < mid_y:
-        return "sol_ust"
-    elif cx >= mid_x and cy < mid_y:
-        return "sag_ust"
-    elif cx < mid_x and cy >= mid_y:
-        return "sol_alt"
+    mid_x, mid_y = w // 2, h // 2
+    if cy < mid_y:
+        return "sol_ust" if cx < mid_x else "sag_ust"
     else:
-        return "sag_alt"
+        return "sol_alt" if cx < mid_x else "sag_alt"
 
 frame_count = 0
-event_text = ""   # yorum metni global olarak tutulacak
+event_text = ""
+results = None
 
 while True:
     ret, frame = cap.read()
-    if not ret:
-        print("Kamera okunamadi.")
-        break
+    if not ret: break
 
     h, w, _ = frame.shape
-    mid_x = w // 2
-    mid_y = h // 2
+    mid_x, mid_y = w // 2, h // 2
 
-    # Zone çizgileri
+    # --- GÖRSEL KATMANLAR (Zonelar ve Çizgiler) ---
     cv2.line(frame, (mid_x, 0), (mid_x, h), (0, 255, 0), 2)
     cv2.line(frame, (0, mid_y), (w, mid_y), (0, 255, 0), 2)
 
-    # Zone isimleri
+    # Zone İsimleri
     cv2.putText(frame, "SOL UST", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(frame, "SAG UST", (mid_x + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(frame, "SOL ALT", (20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(frame, "SAG ALT", (mid_x + 20, mid_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-    # YOLO inference'i her 2 karede bir çalıştır
+    # --- YOLO TESPİT ---
+    # Her 2 karede bir çalıştır ama results'ı her zaman kontrol et
     if frame_count % 2 == 0:
-        results = model(frame)
+        results = model.predict(frame, conf=0.40, classes=[PHONE_CLASS_ID], verbose=False)
     frame_count += 1
 
     detected_phone = False
     current_zone = None
 
-    if frame_count % 2 == 0:
-        for box in results[0].boxes:
-            cls = int(box.cls[0].item())
-            conf = float(box.conf[0].item())
-            if cls == PHONE_CLASS_ID and conf > 0.40:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                current_zone = get_zone(cx, cy, w, h)
-                detected_phone = True
+    if results and len(results[0].boxes) > 0:
+        # En yüksek skorlu kutuyu al
+        box = results[0].boxes[0]
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        conf = float(box.conf[0].item())
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        
+        current_zone = get_zone(cx, cy, w, h)
+        detected_phone = True
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+        # Kutuyu ve merkezi çiz
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+        cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+        cv2.putText(frame, f"Telefon {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-                cv2.putText(frame,
-                            f"Telefon | {current_zone} | conf:{conf:.2f}",
-                            (x1, max(y1 - 10, 20)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 255, 255),
-                            2)
-                break
-
-    if detected_phone:
+        # --- MANTIK VE OLAY YÖNETİMİ ---
         if current_zone != last_zone:
             zone_counts[current_zone] += 1
-            count = zone_counts[current_zone]
-
             if last_zone is None:
-                event_text = f"Telefon ilk kez {current_zone.upper()} bolgesinde goruldu"
-                print(f"EVENT: {event_text}")
+                event_text = f"Telefon ILK KEZ {current_zone.upper()} bolgesinde"
             else:
-                event_text = f"Telefon {last_zone.upper()} -> {current_zone.upper()} bolgesine gecti"
-                print(f"EVENT: {event_text}")
-
-            print(f"STATE: telefon {count} defa {current_zone} bolgede goruldu")
-            play_sound(current_zone, count)
+                event_text = f"GECIS: {last_zone.upper()} -> {current_zone.upper()}"
+            
+            # Sesi ayrı thread'de çal
+            threading.Thread(target=play_sound, args=(current_zone,), daemon=True).start()
             last_zone = current_zone
 
-        y_offset = 60
-        for zone_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
-            text = f"{zone_name}: {zone_counts[zone_name]}"
-            cv2.putText(frame, text, (20, y_offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
-            y_offset += 30
+    # --- EKRAN BİLGİ TABLOSU (Sol Üst Köşe) ---
+    y_offset = 60
+    for z_name in ["sol_ust", "sag_ust", "sol_alt", "sag_alt"]:
+        color = (0, 255, 255) if z_name == current_zone else (255, 255, 0)
+        cv2.putText(frame, f"{z_name}: {zone_counts[z_name]}", (20, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        y_offset += 25
 
-        cv2.putText(frame, f"Anlik Zone: {last_zone}",
-                    (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
+    # --- DURUM VE OLAY METİNLERİ ---
+    if not detected_phone:
+        cv2.putText(frame, "TELEFON TESPIT EDILMEDI", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
     else:
-        cv2.putText(frame, "Telefon tespit edilmedi",
-                    (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(frame, f"Anlik Zone: {current_zone}", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # --- ORTADA yorum metni HER ZAMAN çiz ---
     if event_text:
-        cv2.putText(frame, event_text,
-                    (w // 2 - 250, h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 0, 0),   # siyah renk
-                    2,
-                    cv2.LINE_AA)
+        # Metni merkeze siyah gölgeli yaz
+        cv2.putText(frame, event_text, (w // 2 - 200, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3) # Gölge
+        cv2.putText(frame, event_text, (w // 2 - 200, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2) # Ana metin
 
-    cv2.imshow("PlayX Zone + Event + State + Audio", frame)
+    cv2.imshow("Gelismiş Telefon Takip Sistemi", frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
